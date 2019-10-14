@@ -38,74 +38,74 @@ namespace DXVisualTestFixer.Core {
     }
 
     public static class TestLoader {
-        public static CorpDirTestInfoContainer LoadFromInfo(IFarmTaskInfo taskInfo, string realUrl) {
+        public static async Task<CorpDirTestInfoContainer> LoadFromInfo(IFarmTaskInfo taskInfo, string realUrl, IMinioWorker minioWorker) {
             List<CorpDirTestInfo> failedTests = new List<CorpDirTestInfo>();
-            if(realUrl == null || !realUrl.Contains("ViewBuildReport.aspx")) {
-                throw new NotSupportedException("Contact Petr Zinovyev, please.");
-            }
-            var myXmlDocument = LoadFromUrl(realUrl);
-            List<Task<List<CorpDirTestInfo>>> failedTestsTasks = new List<Task<List<CorpDirTestInfo>>>();
-            if(!IsSuccessBuild(myXmlDocument)) {
-                foreach(XmlElement testCaseXml in FindFailedTests(myXmlDocument)) {
+            List<string> usedFileLinks = new List<string>();
+            List<IElapsedTimeInfo> elapsedTimes = new List<IElapsedTimeInfo>();
+            List<Team> teamsResult = new List<Team>();
+            var pipelines = await minioWorker.Discover(realUrl);
+            var lastPipeline = CalcLastPipeline(realUrl, pipelines);
+            string resultsUrl = $@"{realUrl}{lastPipeline}/results/";
+            var fail = await minioWorker.Download($@"{resultsUrl}fail");
+            if (!string.IsNullOrEmpty(fail)) {
+                var cases = await FindFailedTests(resultsUrl, minioWorker);
+                foreach (var testCaseXml in cases) {
                     string testNameAndNamespace = testCaseXml.GetAttribute("name");
                     XmlNode failureNode = testCaseXml.FindByName("failure");
-                    failedTestsTasks.Add(Task.Factory.StartNew<List<CorpDirTestInfo>>(() => {
-                        XmlNode resultNode = failureNode.FindByName("message");
-                        XmlNode stackTraceNode = failureNode.FindByName("stack-trace");
-                        List<CorpDirTestInfo> localRes = new List<CorpDirTestInfo>();
-                        ParseMessage(taskInfo, testNameAndNamespace, resultNode.InnerText, stackTraceNode.InnerText, localRes);
-                        return localRes;
-                    }));
+                    XmlNode resultNode = failureNode.FindByName("message");
+                    XmlNode stackTraceNode = failureNode.FindByName("stack-trace");
+                    List<CorpDirTestInfo> localRes = new List<CorpDirTestInfo>();
+                    ParseMessage(taskInfo, testNameAndNamespace, resultNode.InnerText, stackTraceNode.InnerText, localRes);
+                    failedTests.AddRange(localRes);
                 }
-                var errors = FindErrors(myXmlDocument).ToList();
-                if(errors.Count > 0) {
-                    failedTestsTasks.Add(Task.Factory.StartNew<List<CorpDirTestInfo>>(() => {
-                        List<CorpDirTestInfo> result = new List<CorpDirTestInfo>();
-                        foreach(var error in errors)
-                            result.Add(CorpDirTestInfo.CreateError(taskInfo, "Error", error.InnerText, null));
-                        return result;
-                    }));
-                }
-                if(failedTestsTasks.Count > 0) {
-                    Task.WaitAll(failedTestsTasks.ToArray());
-                    failedTestsTasks.ForEach(t => failedTests.AddRange(t.Result));
-                }
-                else {
-                    if(!taskInfo.Success)
-                        failedTests.Add(CorpDirTestInfo.CreateError(taskInfo, "BuildError", "BuildError", "BuildError"));
+                
+                foreach (var ownerDoc in cases.Select(x => x.OwnerDocument).Distinct()) {
+                    var links = FindUsedFilesLinks(ownerDoc);
+                    if (links.Any())
+                        usedFileLinks.AddRange(links);
+                    var elapsed = FindElapsedTimes(ownerDoc);
+                    if (elapsed.Any())
+                        elapsedTimes.AddRange(elapsed);
+                    var teams = FindTeams("19.2", ownerDoc);
+                    if (teams.Any())
+                        teamsResult.AddRange(teams);
                 }
             }
-            return new CorpDirTestInfoContainer(failedTests, FindUsedFilesLinks(myXmlDocument).ToList(), FindElapsedTimes(myXmlDocument), FindTeams(taskInfo.Repository.Version, myXmlDocument), FindTimings(myXmlDocument));
+            return new CorpDirTestInfoContainer(failedTests, usedFileLinks, elapsedTimes, teamsResult.Distinct().ToList(), null);
+        }
+        static string CalcLastPipeline(string rootUrl, string[] pipelines) {
+            return pipelines.Select(x => x.Substring(rootUrl.Length, x.Length - rootUrl.Length - 1)).OrderByDescending(x => x).FirstOrDefault();
         }
         static XmlDocument LoadFromUrl(string realUrl) {
             XmlDocument myXmlDocument = new XmlDocument();
             realUrl = realUrl.Replace("ViewBuildReport.aspx", "XmlBuildLog.xml");
             int i = 0;
-            while(i++ < 10) {
+            while (i++ < 10) {
                 try {
                     myXmlDocument.Load(realUrl);
                     return myXmlDocument;
                 }
                 catch {
-                    if(i == 10)
+                    if (i == 10)
                         throw;
                 }
             }
+
             throw new NotSupportedException();
         }
 
         static bool IsSuccessBuild(XmlDocument myXmlDocument) {
             XmlNode buildNode = FindBuildNode(myXmlDocument);
-            if(buildNode == null)
+            if (buildNode == null)
                 return false;
             return !buildNode.TryGetAttibute("error", out string _);
         }
         static (DateTime sources, DateTime tests)? FindTimings(XmlDocument myXmlDocument) {
             XmlNode buildNode = FindBuildNode(myXmlDocument);
-            if(buildNode == null)
+            if (buildNode == null)
                 return null;
             var timingsNode = buildNode.FindByName("Timings");
-            if(timingsNode == null)
+            if (timingsNode == null)
                 return null;
             try {
                 return (GetDateTimeFromTimingsString(timingsNode.FindByName("Sources").InnerText), GetDateTimeFromTimingsString(timingsNode.FindByName("Tests").InnerText));
@@ -123,91 +123,108 @@ namespace DXVisualTestFixer.Core {
 
         static IEnumerable<XmlElement> FindFailedTests(XmlDocument myXmlDocument) {
             XmlNode buildNode = FindBuildNode(myXmlDocument);
-            if(buildNode == null)
+            if (buildNode == null)
                 yield break;
-            foreach(var testResults in buildNode.FindAllByName("test-results")) {
-                foreach(XmlElement subNode in FindAllFailedTests(testResults))
+            foreach (var testResults in buildNode.FindAllByName("test-results")) {
+                foreach (XmlElement subNode in FindAllFailedTests(testResults))
                     yield return subNode;
             }
         }
+        static async Task<XmlElement[]> FindFailedTests(string url, IMinioWorker worker) {
+            var result = new List<XmlElement>();
+            var files = await worker.Discover(url);
+            foreach (var file in files.Where(x => Path.GetExtension(x) == ".xml")) {
+                var xmlDoc = new XmlDocument();
+                var content = await worker.Download(file);
+                xmlDoc.LoadXml($@"<cruisecontrol><build>{content}</build></cruisecontrol>");
+                var failedTests = FindFailedTests(xmlDoc);
+                if (failedTests.Any())
+                    result.AddRange(failedTests);
+            }
+
+            return result.ToArray();
+        }
         static IEnumerable<XmlElement> FindErrors(XmlDocument myXmlDocument) {
             XmlNode buildNode = FindBuildNode(myXmlDocument);
-            if(buildNode == null)
+            if (buildNode == null)
                 yield break;
-            foreach(var root in buildNode.FindAllByName("root"))
-                foreach(XmlElement error in root.FindAllByName("error"))
+            foreach (var root in buildNode.FindAllByName("root"))
+                foreach (XmlElement error in root.FindAllByName("error"))
                     yield return error;
         }
         static IEnumerable<string> FindUsedFilesLinks(XmlDocument myXmlDocument) {
             XmlNode buildNode = FindBuildNode(myXmlDocument);
-            if(buildNode == null)
+            if (buildNode == null)
                 yield break;
-            foreach(var usedFilesNode in buildNode.FindAllByName("FileUsingLogLink")) {
+            foreach (var usedFilesNode in buildNode.FindAllByName("FileUsingLogLink")) {
                 yield return usedFilesNode.InnerText.Replace("\n", string.Empty);
             }
         }
         static List<IElapsedTimeInfo> FindElapsedTimes(XmlDocument myXmlDocument) {
             List<IElapsedTimeInfo> result = new List<IElapsedTimeInfo>();
             XmlNode buildNode = FindBuildNode(myXmlDocument);
-            if(buildNode == null)
+            if (buildNode == null)
                 return result;
-            foreach(var elapsedTimeNode in buildNode.FindAllByName("ElapsedTime")) {
+            foreach (var elapsedTimeNode in buildNode.FindAllByName("ElapsedTime")) {
                 string name;
-                if(!elapsedTimeNode.TryGetAttibute("Name", out name))
+                if (!elapsedTimeNode.TryGetAttibute("Name", out name))
                     continue;
                 string time;
-                if(!elapsedTimeNode.TryGetAttibute("Time", out time))
+                if (!elapsedTimeNode.TryGetAttibute("Time", out time))
                     continue;
-                if(int.TryParse(time.Split('.').FirstOrDefault() ?? time, out int sec))
+                if (int.TryParse(time.Split('.').FirstOrDefault() ?? time, out int sec))
                     result.Add(new ElapsedTimeInfo(name, TimeSpan.FromSeconds(sec)));
             }
+
             return result;
         }
         static List<Team> FindTeams(string version, XmlDocument myXmlDocument) {
             Dictionary<string, Team> result = new Dictionary<string, Team>();
             XmlNode buildNode = FindBuildNode(myXmlDocument);
-            if(buildNode == null)
+            if (buildNode == null)
                 return null;
-            foreach(var teamNode in buildNode.FindAllByName("Project")) {
+            foreach (var teamNode in buildNode.FindAllByName("Project")) {
                 int dpi;
-                if(!teamNode.TryGetAttibute("Dpi", out dpi))
+                if (!teamNode.TryGetAttibute("Dpi", out dpi))
                     continue;
                 string teamName;
-                if(!teamNode.TryGetAttibute("IncludedCategories", out teamName))
+                if (!teamNode.TryGetAttibute("IncludedCategories", out teamName))
                     continue;
                 string resourcesFolder;
-                if(!teamNode.TryGetAttibute("ResourcesFolder", out resourcesFolder))
+                if (!teamNode.TryGetAttibute("ResourcesFolder", out resourcesFolder))
                     continue;
                 string testResourcesPath;
-                if(!teamNode.TryGetAttibute("TestResourcesPath", out testResourcesPath))
+                if (!teamNode.TryGetAttibute("TestResourcesPath", out testResourcesPath))
                     continue;
                 testResourcesPath = Path.Combine(resourcesFolder, testResourcesPath);
                 string testResourcesPath_optimized = null;
                 teamNode.TryGetAttibute("TestResourcesPath_Optimized", out testResourcesPath_optimized);
-                if(testResourcesPath_optimized != null)
+                if (testResourcesPath_optimized != null)
                     testResourcesPath_optimized = Path.Combine(resourcesFolder, testResourcesPath_optimized);
                 var projectInfosNode = teamNode.FindByName("ProjectInfos");
-                if(projectInfosNode == null)
+                if (projectInfosNode == null)
                     continue;
-                foreach(var projectInfoNode in projectInfosNode.FindAllByName("ProjectInfo")) {
+                foreach (var projectInfoNode in projectInfosNode.FindAllByName("ProjectInfo")) {
                     string serverFolderName;
-                    if(!projectInfoNode.TryGetAttibute("ServerFolderName", out serverFolderName))
+                    if (!projectInfoNode.TryGetAttibute("ServerFolderName", out serverFolderName))
                         continue;
                     bool optimized;
                     projectInfoNode.TryGetAttibute("Optimized", out optimized);
                     Team team;
-                    if(!result.TryGetValue(teamName, out team))
-                        result[teamName] = team = new Team() { Name = teamName, Version = version };
-                    team.TeamInfos.Add(new TeamInfo() { Dpi = dpi, Optimized = optimized, ServerFolderName = serverFolderName, TestResourcesPath = testResourcesPath, TestResourcesPath_Optimized = testResourcesPath_optimized });
+                    if (!result.TryGetValue(teamName, out team))
+                        result[teamName] = team = new Team() {Name = teamName, Version = version};
+                    team.TeamInfos.Add(new TeamInfo()
+                        {Dpi = dpi, Optimized = optimized, ServerFolderName = serverFolderName, TestResourcesPath = testResourcesPath, TestResourcesPath_Optimized = testResourcesPath_optimized});
                 }
             }
+
             return result.Values.Count == 0 ? null : result.Values.ToList();
         }
 
         static bool TryGetAttibute<T>(this XmlNode node, string name, out T value) {
             value = default(T);
             var res = node.Attributes[name];
-            if(res == null)
+            if (res == null)
                 return false;
             //value = (T)Convert.ChangeType(res, typeof(T));
             var converter = TypeDescriptor.GetConverter(typeof(T));
@@ -218,105 +235,115 @@ namespace DXVisualTestFixer.Core {
             return myXmlDocument.FindByName("cruisecontrol")?.FindByName("build");
         }
         static IEnumerable<XmlElement> FindAllFailedTests(XmlNode testResults) {
-            foreach(XmlNode node in testResults.ChildNodes) {
+            foreach (XmlNode node in testResults.ChildNodes) {
                 XmlElement xmlElement = node as XmlElement;
-                if(xmlElement != null && xmlElement.Name == "test-case" && xmlElement.GetAttribute("success") == "False")
+                if (xmlElement != null && xmlElement.Name == "test-case" && xmlElement.GetAttribute("success") == "False")
                     yield return xmlElement;
                 else {
-                    foreach(XmlElement subNode in FindAllFailedTests(node))
+                    foreach (XmlElement subNode in FindAllFailedTests(node))
                         yield return subNode;
                 }
             }
         }
         static XmlNode FindByName(this XmlNode element, string name) {
-            foreach(XmlNode node in element.ChildNodes) {
-                if(node.Name == name)
+            foreach (XmlNode node in element.ChildNodes) {
+                if (node.Name == name)
                     return node;
             }
+
             return null;
         }
         static IEnumerable<XmlNode> FindAllByName(this XmlNode element, string name) {
-            foreach(XmlNode node in element.ChildNodes) {
-                if(node.Name == name)
+            foreach (XmlNode node in element.ChildNodes) {
+                if (node.Name == name)
                     yield return node;
             }
         }
         public static void ParseMessage(IFarmTaskInfo farmTaskInfo, string testNameAndNamespace, string message, string stackTrace, List<CorpDirTestInfo> resultList) {
-            if(!message.StartsWith("Exception - NUnit.Framework.AssertionException")) {
+            if (!message.StartsWith("Exception - NUnit.Framework.AssertionException")) {
                 resultList.Add(CorpDirTestInfo.CreateError(farmTaskInfo, testNameAndNamespace, message, stackTrace));
                 return;
             }
-            List<string> themedResultPaths = message.Split(new[] { " - failed:" }, StringSplitOptions.RemoveEmptyEntries).ToList();
-            if(themedResultPaths.Count == 1) {
+
+            List<string> themedResultPaths = message.Split(new[] {" - failed:"}, StringSplitOptions.RemoveEmptyEntries).ToList();
+            if (themedResultPaths.Count == 1) {
                 resultList.Add(CorpDirTestInfo.CreateError(farmTaskInfo, testNameAndNamespace, message, stackTrace));
                 return;
             }
-            foreach(var part in themedResultPaths) {
+
+            foreach (var part in themedResultPaths) {
                 ParseMessagePart(farmTaskInfo, testNameAndNamespace, part, resultList);
             }
         }
         static void ParseMessagePart(IFarmTaskInfo farmTaskInfo, string testNameAndNamespace, string message, List<CorpDirTestInfo> resultList) {
-            List<string> parts = message.Split(new[] { "\n" }, StringSplitOptions.RemoveEmptyEntries).ToList();
+            List<string> parts = message.Split(new[] {"\n"}, StringSplitOptions.RemoveEmptyEntries).ToList();
             List<string> paths = parts.Where(x => x.Contains(@"\\corp")).Select(x => x.Replace(@"\\corp", String.Empty)).ToList();
 
             List<string> resultPaths = PatchPaths(paths);
             List<string> shaList = PatchSHA(parts.Where(x => x.Contains("sha-")).Select(x => x.Replace("sha-", String.Empty)).ToList());
             int? diffCount = TryGetDiffCount(parts.Where(x => x.Contains("diffCount=")).Select(x => x.Replace("diffCount=", String.Empty)).LastOrDefault());
             CorpDirTestInfo info = null;
-            if(!CorpDirTestInfo.TryCreate(farmTaskInfo, testNameAndNamespace, resultPaths, shaList, diffCount, out info))
+            if (!CorpDirTestInfo.TryCreate(farmTaskInfo, testNameAndNamespace, resultPaths, shaList, diffCount, out info))
                 return;
             resultList.Add(info);
         }
         static int? TryGetDiffCount(string str) {
-            if(Int32.TryParse(str, out int res))
+            if (Int32.TryParse(str, out int res))
                 return res;
             return null;
         }
         static List<string> PatchSHA(List<string> shaList) {
             var result = new List<string>();
-            foreach(var sha in shaList) {
+            foreach (var sha in shaList) {
                 result.Add(sha.Replace("\r", String.Empty).Replace("\n", String.Empty));
             }
+
             return result;
         }
         static List<string> PatchPaths(List<string> resultPaths) {
             List<string> result = new List<string>();
-            foreach(var pathCandidate in resultPaths) {
-                if(!pathCandidate.Contains('\\'))
+            foreach (var pathCandidate in resultPaths) {
+                if (!pathCandidate.Contains('\\'))
                     continue;
                 string cleanPath = @"\\corp" + pathCandidate.Replace("\r", String.Empty).Replace("\n", String.Empty).Replace(@"\\", @"\");
-                if(cleanPath.Contains(' '))
+                if (cleanPath.Contains(' '))
                     continue;
-                if(File.Exists(cleanPath)) {
+                if (File.Exists(cleanPath)) {
                     result.Add(cleanPath);
                     continue;
                 }
-                if(cleanPath.Contains("InstantBitmap.png.sha")) {
+
+                if (cleanPath.Contains("InstantBitmap.png.sha")) {
                     SafeAddPath("InstantBitmap.png.sha", cleanPath, result);
                     continue;
                 }
-                if(cleanPath.Contains("InstantBitmap.png")) {
+
+                if (cleanPath.Contains("InstantBitmap.png")) {
                     SafeAddPath("InstantBitmap.png", cleanPath, result);
                     continue;
                 }
-                if(cleanPath.Contains("BitmapDif.png")) {
+
+                if (cleanPath.Contains("BitmapDif.png")) {
                     SafeAddPath("BitmapDif.png", cleanPath, result);
                     continue;
                 }
-                if(cleanPath.Contains("CurrentBitmap.png.sha")) {
+
+                if (cleanPath.Contains("CurrentBitmap.png.sha")) {
                     SafeAddPath("CurrentBitmap.png.sha", cleanPath, result);
                     continue;
                 }
-                if(cleanPath.Contains("CurrentBitmap.png")) {
+
+                if (cleanPath.Contains("CurrentBitmap.png")) {
                     SafeAddPath("CurrentBitmap.png", cleanPath, result);
                     continue;
                 }
             }
+
             return result;
         }
         static void SafeAddPath(string fileName, string pathCandidate, List<string> paths) {
-            var cleanPath = pathCandidate.Split(new[] { fileName }, StringSplitOptions.RemoveEmptyEntries).First() + fileName;
-            if(File.Exists(cleanPath))
+            var cleanPath = pathCandidate.Split(new[] {fileName}, StringSplitOptions.RemoveEmptyEntries).First() + fileName;
+            if (File.Exists(cleanPath))
                 paths.Add(cleanPath);
         }
     }

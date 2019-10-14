@@ -10,7 +10,7 @@ using ThoughtWorks.CruiseControl.Remote;
 namespace DXVisualTestFixer.FarmIntegrator2 {
     public class MinioIntegrator : IFarmIntegrator {
         async Task<List<IFarmTaskInfo>> IFarmIntegrator.GetAllTasks(Repository[] repositories) {
-            var result = repositories.Select(repository => new FarmTaskInfo(repository, @"visualtests/Litvinov/Common/19.2")).Cast<IFarmTaskInfo>().ToList();
+            var result = repositories.Select(repository => new FarmTaskInfo(repository, @"kamenchyuk.alexander/Common/19.2/")).Cast<IFarmTaskInfo>().ToList();
             return await Task.FromResult(result);
         }
     }

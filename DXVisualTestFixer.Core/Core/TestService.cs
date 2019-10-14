@@ -114,16 +114,18 @@ namespace DXVisualTestFixer.Core {
         readonly IConfigSerializer configSerializer;
         readonly ILoggingService loggingService;
         readonly IFarmIntegrator farmIntegrator;
+        private readonly IMinioWorker minioWorker;
 
         Dictionary<IFarmTaskInfo, TestInfoCached> RealUrlCache = new Dictionary<IFarmTaskInfo, TestInfoCached>();
 
         string _CurrentFilter = null;
 
-        public TestsService(ILoadingProgressController loadingProgressController, IConfigSerializer configSerializer, ILoggingService loggingService, IFarmIntegrator farmIntegrator) {
+        public TestsService(ILoadingProgressController loadingProgressController, IConfigSerializer configSerializer, ILoggingService loggingService, IFarmIntegrator farmIntegrator, IMinioWorker minioWorker) {
             this.loadingProgressController = loadingProgressController;
             this.configSerializer = configSerializer;
             this.loggingService = loggingService;
             this.farmIntegrator = farmIntegrator;
+            this.minioWorker = minioWorker;
         }
 
         public ITestInfoContainer ActualState { get; private set; }
@@ -179,7 +181,7 @@ namespace DXVisualTestFixer.Core {
                 }
             }
             List<Task<TestInfo>> allTasks = new List<Task<TestInfo>>();
-            CorpDirTestInfoContainer corpDirTestInfoContainer = LoadFromFarmTaskInfo(farmTaskInfo, farmTaskInfo.Url);
+            CorpDirTestInfoContainer corpDirTestInfoContainer = await LoadFromFarmTaskInfo(farmTaskInfo, farmTaskInfo.Url);
             foreach(var corpDirTestInfo in corpDirTestInfoContainer.FailedTests) {
                 CorpDirTestInfo info = corpDirTestInfo;
                 allTasks.Add(Task.Factory.StartNew<TestInfo>(() => LoadTestInfo(info, corpDirTestInfoContainer.Teams)));
@@ -199,8 +201,8 @@ namespace DXVisualTestFixer.Core {
             Task.WaitAll(allTasks.ToArray());
         }
 
-        CorpDirTestInfoContainer LoadFromFarmTaskInfo(IFarmTaskInfo farmTaskInfo, string realUrl) {
-            CorpDirTestInfoContainer corpDirTestInfoContainer = TestLoader.LoadFromInfo(farmTaskInfo, realUrl);
+        async Task<CorpDirTestInfoContainer> LoadFromFarmTaskInfo(IFarmTaskInfo farmTaskInfo, string realUrl) {
+            CorpDirTestInfoContainer corpDirTestInfoContainer = await TestLoader.LoadFromInfo(farmTaskInfo, realUrl, minioWorker);
             loadingProgressController.Enlarge(corpDirTestInfoContainer.FailedTests.Count);
             return corpDirTestInfoContainer;
         }
