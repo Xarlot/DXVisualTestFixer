@@ -45,8 +45,27 @@
       <SpecificVersion>False</SpecificVersion>
       <HintPath>..\lib\DXFarm2\ccnet.smart.plugin.dll</HintPath>
     </Reference>
+    <Reference Include="Minio, Version=3.1.6.0, Culture=neutral, PublicKeyToken=348239ebd7debb4c">
+      <HintPath>..\packages\Minio.3.1.6\lib\net46\Minio.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="RestSharp, Version=106.3.1.0, Culture=neutral, PublicKeyToken=598062e77f915f75">
+      <HintPath>..\packages\RestSharp.106.3.1\lib\net452\RestSharp.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
+    <Reference Include="System.Reactive, Version=4.0.0.0, Culture=neutral, PublicKeyToken=94bc3704cddfc263">
+      <HintPath>..\packages\System.Reactive.4.0.0\lib\net46\System.Reactive.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Reactive.Linq, Version=3.0.3000.0, Culture=neutral, PublicKeyToken=94bc3704cddfc263">
+      <HintPath>..\packages\System.Reactive.Linq.4.0.0\lib\net46\System.Reactive.Linq.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Web" />
+    <Reference Include="System.Windows" />
+    <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Data.DataSetExtensions" />
     <Reference Include="Microsoft.CSharp" />
@@ -56,15 +75,18 @@
     <Reference Include="ThoughtWorks.CruiseControl.Remote">
       <HintPath>..\lib\DXFarm2\ThoughtWorks.CruiseControl.Remote.dll</HintPath>
     </Reference>
+    <Reference Include="WindowsBase" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="FarmIntegrator.cs" />
     <Compile Include="FarmRefreshedEventArgs.cs" />
     <Compile Include="FarmTaskInfo.cs" />
+    <Compile Include="MinioIntegrator.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
+    <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\DXVisualTestFixer.Common\DXVisualTestFixer.Common.csproj">
